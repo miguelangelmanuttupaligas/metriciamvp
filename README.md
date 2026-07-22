@@ -30,7 +30,7 @@ Servicios:
 - Backend: http://localhost:8000
 - Healthcheck: http://localhost:8000/health
 
-El frontend usa `/api` como base estable tanto en local como en VM. En local, Vite hace proxy hacia el backend. En VM, Nginx debe proxyar `/api/` hacia el backend.
+El frontend usa `/api` como base estable tanto en local como en VM. En local, el contenedor frontend sirve estáticos con Nginx y proxya `/api` al backend. En VM, el Nginx del host debe enviar `/` al frontend y `/api/` al backend. Hay un template listo en [deploy/nginx-site.conf](/home/miguel/DataAI4/deploy/nginx-site.conf) donde solo debes reemplazar `__DOMAIN__`.
 
 ## Flujo
 
