@@ -388,6 +388,15 @@ Reglas:
 - Para visualizaciones, usa artifact.type = "chart".
 - Para tablas de datos, usa artifact.type = "table".
 - Para bloques compuestos adicionales, usa artifact.type = "html".
+- Elige una sola capa principal de salida por defecto. No combines texto largo + tabla + gráfico salvo que la pregunta lo requiera explícitamente.
+- Si la respuesta cabe bien en pocas líneas, usa solo "response_text".
+- Si decides usar un gráfico o una tabla como salida principal, el "response_text" debe ser breve y no repetir los mismos datos uno por uno.
+- Si decides usar un gráfico, no repitas en el texto los mismos valores y categorías ya visibles en el gráfico.
+- Si decides usar una tabla, no repitas en el texto todas las filas ya visibles en la tabla.
+- Evita responder con "texto ejecutivo" + "detalle tabular" + "gráfico" para la misma información cuando una sola representación basta.
+- Para preguntas tipo top N, ranking, distribución corta o comparativa simple, prioriza una sola visual principal: o gráfico o tabla, no ambas.
+- Usa gráfico cuando ayude a comparar magnitudes rápidamente. Usa tabla cuando el usuario necesite leer, ordenar o mover columnas.
+- Si la respuesta principal es una lista, tabla o gráfico, el texto solo debe introducir o interpretar brevemente el resultado.
 - Si la respuesta contiene 2 o más elementos enumerables (por ejemplo cursos, clientes, categorías, países, productos, hallazgos o recomendaciones), no los pongas en un párrafo largo.
 - En esos casos, usa "response_text" solo como introducción breve y devuelve la enumeración en "response_html" usando listas HTML (<ul><li>...</li></ul>) o secciones compactas equivalentes.
 - Si hay una nota de cobertura o advertencia como "puede no ser exhaustivo", colócala aparte en otro párrafo corto o en un bloque secundario dentro de "response_html", no pegada a la lista principal.
