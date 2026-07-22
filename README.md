@@ -30,6 +30,8 @@ Servicios:
 - Backend: http://localhost:8000
 - Healthcheck: http://localhost:8000/health
 
+El frontend usa `/api` como base estable tanto en local como en VM. En local, Vite hace proxy hacia el backend. En VM, Nginx debe proxyar `/api/` hacia el backend.
+
 ## Flujo
 
 1. El usuario carga un `.xlsx` y una descripcion corta.
