@@ -17,7 +17,11 @@ def require_openai_key() -> str:
 
 
 def get_embedding_model() -> OpenAIEmbedding:
-    kwargs = {"model": settings.embedding_model, "api_key": require_openai_key()}
+    kwargs = {
+        "model": settings.embedding_model,
+        "api_key": require_openai_key(),
+        "timeout": settings.openai_timeout_seconds,
+    }
     if settings.embedding_dimensions:
         kwargs["dimensions"] = settings.embedding_dimensions
     return OpenAIEmbedding(**kwargs)
@@ -28,7 +32,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 
 def llm_text(system_prompt: str, user_prompt: str) -> str:
-    client = OpenAI(api_key=require_openai_key())
+    client = OpenAI(api_key=require_openai_key(), timeout=settings.openai_timeout_seconds)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

@@ -5,6 +5,7 @@ import {
   Bot,
   FileText,
   Gauge,
+  MessageSquarePlus,
   Paperclip,
   RotateCcw,
   Send,
@@ -20,11 +21,12 @@ const suggestions = [
   'Compara patrones entre los archivos',
 ];
 
-function uploadDatasetRequest(file, description, onProgress) {
+function uploadDatasetRequest(file, description, onProgress, chatSessionId) {
   return new Promise((resolve, reject) => {
     const body = new FormData();
     body.append('file', file);
     body.append('description', description);
+    if (chatSessionId) body.append('chat_session_id', chatSessionId);
 
     const request = new XMLHttpRequest();
     request.open('POST', `${API_BASE_URL}/datasets`);
@@ -113,7 +115,14 @@ function datasetStatusLabel(dataset) {
   return 'Cargando';
 }
 
-function Sidebar({ datasets, activeDatasetId, onSelect, onReset, resetting }) {
+function chatMetaLabel(session) {
+  const datasets = session?.datasets || [];
+  const readyCount = datasets.filter((item) => item.status === 'ready').length;
+  if (!datasets.length) return 'Sin archivos';
+  return `${datasets.length} archivo${datasets.length > 1 ? 's' : ''} · ${readyCount} listo${readyCount > 1 ? 's' : ''}`;
+}
+
+function Sidebar({ sessions, activeSessionId, onSelect, onCreate, onReset, resetting }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -125,24 +134,31 @@ function Sidebar({ datasets, activeDatasetId, onSelect, onReset, resetting }) {
       </div>
 
       <div className="sidebarSection">
-        <div className="sidebarLabel">Archivos cargados</div>
-        {datasets.length === 0 ? (
+        <div className="sidebarHeaderRow">
+          <div className="sidebarLabel">Chats</div>
+          <button type="button" className="newChatBtn" onClick={onCreate}>
+            <MessageSquarePlus size={14} />
+            <span>Nuevo</span>
+          </button>
+        </div>
+        {sessions.length === 0 ? (
           <div className="sidebarEmpty">
-            Aún no hay archivos. Adjunta un CSV o Excel desde el chat.
+            Aún no hay chats. Crea uno nuevo o adjunta un CSV o Excel desde el área principal.
           </div>
         ) : (
           <div className="datasetList">
-            {datasets.map((dataset) => (
+            {sessions.map((session) => (
               <button
-                key={dataset.id}
-                className={`datasetItem ${dataset.id === activeDatasetId ? 'active' : ''}`}
-                onClick={() => onSelect(dataset.id)}
+                key={session.id}
+                className={`datasetItem ${session.id === activeSessionId ? 'active' : ''}`}
+                onClick={() => onSelect(session.id)}
                 type="button"
               >
                 <div className="datasetItemIcon"><FileText size={15} /></div>
                 <div className="datasetItemBody">
-                  <strong>{dataset.filename}</strong>
-                  <span>{datasetStatusLabel(dataset)}</span>
+                  <strong>{session.title || 'Nuevo chat'}</strong>
+                  <span>{chatMetaLabel(session)}</span>
+                  {session.last_message_preview ? <span>{session.last_message_preview}</span> : null}
                 </div>
               </button>
             ))}
@@ -173,15 +189,17 @@ function Sidebar({ datasets, activeDatasetId, onSelect, onReset, resetting }) {
   );
 }
 
-function Topbar({ readyCount }) {
+function Topbar({ readyCount, title }) {
   return (
     <header className="topbar">
       <div>
         <h1><Sparkles size={19} /> Asistente analítico</h1>
         <p>
-          {readyCount > 0
+          {title
+            ? `${title}${readyCount > 0 ? ` · ${readyCount} archivo${readyCount > 1 ? 's' : ''} listo${readyCount > 1 ? 's' : ''}` : ''}.`
+            : readyCount > 0
             ? `Contexto activo con ${readyCount} archivo${readyCount > 1 ? 's' : ''} listo${readyCount > 1 ? 's' : ''}.`
-            : 'Adjunta uno o más archivos CSV o Excel y conversa sobre ellos.'}
+            : 'Crea un chat, adjunta uno o más archivos CSV o Excel y conversa sobre ellos.'}
         </p>
       </div>
     </header>
@@ -631,7 +649,8 @@ function RightPanel({ datasets, activeDatasetId, onSelect }) {
 }
 
 function App() {
-  const [datasets, setDatasets] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
   const [activeDatasetId, setActiveDatasetId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [pendingJobId, setPendingJobId] = useState(null);
@@ -642,6 +661,11 @@ function App() {
   const [resetting, setResetting] = useState(false);
   const pollRef = useRef(null);
 
+  const activeSession = useMemo(
+    () => sessions.find((item) => item.id === activeSessionId) || sessions[0] || null,
+    [sessions, activeSessionId],
+  );
+  const datasets = activeSession?.datasets || [];
   const readyDatasets = useMemo(() => datasets.filter((item) => item.status === 'ready'), [datasets]);
   const processingDatasets = useMemo(
     () => datasets.filter((item) => item.status === 'processing' || item.status === 'uploaded'),
@@ -650,11 +674,11 @@ function App() {
 
   useEffect(() => {
     let timer;
-    async function loadDatasets() {
+    async function loadSessions() {
       try {
-        const items = await api('/datasets');
-        setDatasets(items);
-        setActiveDatasetId((current) => {
+        const items = await api('/chat/sessions');
+        setSessions(items);
+        setActiveSessionId((current) => {
           if (current && items.some((item) => item.id === current)) return current;
           return items[0]?.id || null;
         });
@@ -662,10 +686,23 @@ function App() {
         setError(err.message);
       }
     }
-    loadDatasets();
-    timer = setInterval(loadDatasets, 2000);
+    loadSessions();
+    timer = setInterval(loadSessions, 2500);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!activeSession) {
+      setMessages([]);
+      setActiveDatasetId(null);
+      return;
+    }
+    setMessages((activeSession.messages || []).map((item) => ({ role: item.role, content: item.content })));
+    setActiveDatasetId((current) => {
+      if (current && datasets.some((item) => item.id === current)) return current;
+      return datasets[0]?.id || null;
+    });
+  }, [activeSession, datasets]);
 
   useEffect(() => {
     if (!pendingJobId) return undefined;
@@ -674,7 +711,7 @@ function App() {
         const job = await api(`/chat/jobs/${pendingJobId}`);
         setPendingDetail(job.detail || 'Analizando.');
         if (job.status === 'complete') {
-          setMessages((items) => [...items, { role: 'assistant', content: job.response || {} }]);
+          await refreshSessions(job.chat_session_id || activeSessionId);
           setPendingJobId(null);
           setPendingDetail('');
         }
@@ -693,10 +730,30 @@ function App() {
     return () => clearInterval(pollRef.current);
   }, [pendingJobId]);
 
-  async function refreshDatasets() {
-    const items = await api('/datasets');
-    setDatasets(items);
-    setActiveDatasetId((current) => current || items[0]?.id || null);
+  async function refreshSessions(preferredSessionId = null) {
+    const items = await api('/chat/sessions');
+    setSessions(items);
+    setActiveSessionId((current) => {
+      if (preferredSessionId && items.some((item) => item.id === preferredSessionId)) return preferredSessionId;
+      if (current && items.some((item) => item.id === current)) return current;
+      return items[0]?.id || null;
+    });
+  }
+
+  async function createSession(title = 'Nuevo chat') {
+    const session = await api('/chat/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    setSessions((items) => [session, ...items]);
+    setActiveSessionId(session.id);
+    return session.id;
+  }
+
+  async function ensureActiveSession(title = 'Nuevo chat') {
+    if (activeSession) return activeSession.id;
+    return createSession(title);
   }
 
   async function uploadFiles(fileList) {
@@ -708,6 +765,7 @@ function App() {
     setError('');
     setUploadQueue(files.map((file) => ({ name: file.name, progress: 0 })));
     try {
+      const sessionId = await ensureActiveSession('Nuevo chat');
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
         const result = await uploadDatasetRequest(
@@ -718,10 +776,11 @@ function App() {
               itemIndex === index ? { ...item, progress } : item
             )));
           },
+          sessionId,
         );
-        setActiveDatasetId(result.dataset_id);
+        setActiveSessionId(result.chat_session_id || sessionId);
       }
-      await refreshDatasets();
+      await refreshSessions(sessionId);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -733,6 +792,7 @@ function App() {
     const cleaned = question.trim();
     if (!cleaned) return;
 
+    const sessionId = await ensureActiveSession(cleaned);
     setMessages((items) => [...items, { role: 'user', content: cleaned }]);
     setError('');
 
@@ -756,8 +816,9 @@ function App() {
       const job = await api('/chat/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataset_id: datasetId, question: cleaned }),
+        body: JSON.stringify({ chat_session_id: sessionId, dataset_id: datasetId, question: cleaned }),
       });
+      await refreshSessions(sessionId);
       setPendingJobId(job.job_id);
       setPendingDetail(job.detail || 'Analizando.');
     } catch (err) {
@@ -776,13 +837,13 @@ function App() {
     setError('');
     try {
       await api('/admin/reset-memory', { method: 'POST' });
-      setDatasets([]);
+      setSessions([]);
+      setActiveSessionId(null);
       setActiveDatasetId(null);
       setMessages([]);
       setPendingJobId(null);
       setPendingDetail('');
       setUploadQueue([]);
-      await refreshDatasets();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -793,14 +854,15 @@ function App() {
   return (
     <div className="appShell">
       <Sidebar
-        datasets={datasets}
-        activeDatasetId={activeDatasetId}
-        onSelect={setActiveDatasetId}
+        sessions={sessions}
+        activeSessionId={activeSession?.id}
+        onSelect={setActiveSessionId}
+        onCreate={() => createSession('Nuevo chat')}
         onReset={resetMemory}
         resetting={resetting}
       />
       <main className="workspace">
-        <Topbar readyCount={readyDatasets.length} />
+        <Topbar readyCount={readyDatasets.length} title={activeSession?.title} />
         <div className="contentGrid">
           <section
             className={`chatPanel ${isDragging ? 'dragging' : ''}`}

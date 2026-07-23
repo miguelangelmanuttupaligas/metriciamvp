@@ -368,6 +368,8 @@ def fallback_analysis_json(filename: str, input_kind: str, summary: str, overvie
 
 def maybe_analysis_json(filename: str, input_kind: str, summary: str, overview: list[dict]) -> dict:
     fallback = fallback_analysis_json(filename, input_kind, summary, overview)
+    if not settings.ingestion_llm_analysis_json:
+        return fallback
     try:
         result = llm_json(
             """
@@ -493,6 +495,15 @@ def save_embeddings(db: Session, dataset_id: str, chunks: list[dict]) -> None:
         db.commit()
 
 
+def try_save_embeddings(db: Session, dataset_id: str, chunks: list[dict]) -> bool:
+    try:
+        save_embeddings(db, dataset_id, chunks)
+        return True
+    except Exception:
+        db.rollback()
+        return False
+
+
 def process_dataset(dataset_id: str, file_path: Path) -> None:
     db = SessionLocal()
     con = None
@@ -596,12 +607,16 @@ def process_dataset(dataset_id: str, file_path: Path) -> None:
 
         update_progress_pct(db, dataset_id, "chunking", "Preparando contexto para preguntas.", 70)
         chunks = build_embedding_chunks(dataset.description or "", profile, workbook_payload, analysis_json)
-        save_embeddings(db, dataset_id, chunks)
+        embeddings_ready = try_save_embeddings(db, dataset_id, chunks)
 
         dataset = db.get(Dataset, dataset_id)
         dataset.status = "ready"
         dataset.progress_step = "ready"
-        dataset.progress_detail = "Archivo listo para conversar."
+        dataset.progress_detail = (
+            "Archivo listo para conversar."
+            if embeddings_ready
+            else "Archivo listo para conversar. Índice semántico omitido por timeout o error externo."
+        )
         dataset.progress_current = 100
         dataset.progress_total = 100
         db.commit()

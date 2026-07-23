@@ -34,6 +34,7 @@ class Dataset(Base):
 
     catalog_items = relationship("SemanticCatalog", cascade="all, delete-orphan")
     embeddings = relationship("DatasetEmbedding", cascade="all, delete-orphan")
+    chat_links = relationship("ChatSessionDataset", cascade="all, delete-orphan")
 
 
 class SemanticCatalog(Base):
@@ -71,6 +72,7 @@ class ChatJob(Base):
     __tablename__ = "chat_jobs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    chat_session_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), ForeignKey("chat_sessions.id"), index=True)
     dataset_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("datasets.id"), index=True)
     question: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
@@ -81,3 +83,42 @@ class ChatJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    title: Mapped[str] = mapped_column(String(255), default="Nuevo chat")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    datasets = relationship("ChatSessionDataset", cascade="all, delete-orphan")
+    messages = relationship("ChatMessage", cascade="all, delete-orphan")
+
+
+class ChatSessionDataset(Base):
+    __tablename__ = "chat_session_datasets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_session_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("chat_sessions.id"), index=True)
+    dataset_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("datasets.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    chat_session = relationship("ChatSession", back_populates="datasets")
+    dataset = relationship("Dataset", overlaps="chat_links")
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    chat_session_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("chat_sessions.id"), index=True)
+    role: Mapped[str] = mapped_column(String(32), index=True)
+    content_text: Mapped[str | None] = mapped_column(Text)
+    payload_json: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    chat_session = relationship("ChatSession", back_populates="messages")

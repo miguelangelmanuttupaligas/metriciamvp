@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-5"
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
+    openai_timeout_seconds: float = 25.0
+    ingestion_llm_analysis_json: bool = False
     row_chunk_size: int = 100
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

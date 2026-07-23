@@ -19,6 +19,8 @@ def init_db() -> None:
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE chat_jobs ADD COLUMN IF NOT EXISTS chat_session_id UUID"))
 
 
 def get_db() -> Generator[Session, None, None]:

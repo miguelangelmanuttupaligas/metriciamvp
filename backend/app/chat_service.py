@@ -24,8 +24,11 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9_ ]+", " ", clean)
 
 
-def ready_datasets(db: Session) -> list[Dataset]:
-    return db.query(Dataset).filter(Dataset.status == "ready").order_by(Dataset.created_at.desc()).all()
+def ready_datasets(db: Session, dataset_ids: list[str] | None = None) -> list[Dataset]:
+    query = db.query(Dataset).filter(Dataset.status == "ready")
+    if dataset_ids:
+        query = query.filter(Dataset.id.in_(dataset_ids))
+    return query.order_by(Dataset.created_at.desc()).all()
 
 
 def pick_primary_dataset(datasets: list[Dataset], dataset_id: str) -> Dataset:
@@ -327,6 +330,23 @@ def fallback_artifacts_from_sql_result(sql_result: dict[str, Any] | None) -> lis
     return artifacts
 
 
+def direct_response_from_sql_result(sql_result: dict[str, Any] | None, primary: Dataset) -> dict[str, Any] | None:
+    if not sql_result or sql_result.get("error") or not sql_result.get("rows"):
+        return None
+    title = str(sql_result.get("title") or "Resultado")
+    row_count = int(sql_result.get("row_count") or 0)
+    response_text = title if row_count else f"No encontré resultados en {primary.filename}."
+    if row_count:
+        response_text = f"Aquí tienes {title.lower()}."
+    return {
+        "type": "answer",
+        "response_text": response_text,
+        "response_html": None,
+        "artifacts": fallback_artifacts_from_sql_result(sql_result),
+        "focus_files": [primary.filename],
+    }
+
+
 def fallback_response(primary: Dataset, question: str) -> dict[str, Any]:
     return {
         "response_text": f"No pude estructurar una respuesta completa para: {question}",
@@ -336,8 +356,8 @@ def fallback_response(primary: Dataset, question: str) -> dict[str, Any]:
     }
 
 
-def answer_question(db: Session, dataset_id: str, question: str) -> dict:
-    datasets = ready_datasets(db)
+def answer_question(db: Session, dataset_id: str, question: str, dataset_ids: list[str] | None = None) -> dict:
+    datasets = ready_datasets(db, dataset_ids)
     if not datasets:
         return {
             "type": "status",
@@ -351,6 +371,9 @@ def answer_question(db: Session, dataset_id: str, question: str) -> dict:
     context_payload = [dataset_context(item) for item in datasets[:4]]
     retrieved_payload = retrieve_context(db, datasets, question)
     sql_result = maybe_run_sql(question, retrieved_payload.get("schema_context", []), retrieved_payload)
+    direct_sql_response = direct_response_from_sql_result(sql_result, primary)
+    if direct_sql_response:
+        return direct_sql_response
 
     try:
         response = llm_json(
