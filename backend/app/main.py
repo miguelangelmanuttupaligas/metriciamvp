@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import shutil
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,6 +21,7 @@ from app.models import ChatJob, ChatMessage, ChatSession, ChatSessionDataset, Da
 
 settings = get_settings()
 app = FastAPI(title="DataAI4 MVP")
+SESSION_COOKIE_NAME = "metricia_session"
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +42,11 @@ class ChatSessionCreateRequest(BaseModel):
     title: str | None = None
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -48,8 +57,74 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def auth_enabled() -> bool:
+    return bool(settings.app_login_username and settings.app_login_password)
+
+
+def expected_session_token() -> str:
+    payload = f"{settings.app_login_username}:{settings.app_login_password}"
+    return hmac.new(
+        settings.app_session_secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def session_cookie_kwargs() -> dict:
+    return {
+        "key": SESSION_COOKIE_NAME,
+        "httponly": True,
+        "samesite": "lax",
+        "secure": settings.app_session_secure,
+        "max_age": settings.app_session_max_age_seconds,
+        "path": "/",
+    }
+
+
+def require_authenticated(request: Request) -> str:
+    if not auth_enabled():
+        return "auth-disabled"
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if hmac.compare_digest(token, expected_session_token()):
+        return settings.app_login_username or "authorized"
+    raise HTTPException(status_code=401, detail="No autorizado.")
+
+
+@app.get("/auth/me")
+def auth_me(request: Request) -> dict:
+    if not auth_enabled():
+        return {"authenticated": True, "username": "shared-access", "auth_enabled": False}
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    authenticated = hmac.compare_digest(token, expected_session_token())
+    return {
+        "authenticated": authenticated,
+        "username": settings.app_login_username if authenticated else None,
+        "auth_enabled": True,
+    }
+
+
+@app.post("/auth/login")
+def auth_login(payload: LoginRequest) -> JSONResponse:
+    if not auth_enabled():
+        return JSONResponse({"authenticated": True, "username": "shared-access", "auth_enabled": False})
+    if payload.username != settings.app_login_username or payload.password != settings.app_login_password:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas.")
+    response = JSONResponse(
+        {"authenticated": True, "username": settings.app_login_username, "auth_enabled": True}
+    )
+    response.set_cookie(value=expected_session_token(), **session_cookie_kwargs())
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout() -> JSONResponse:
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return response
+
+
 @app.post("/admin/reset-memory")
-def reset_memory(db: Session = Depends(get_db)) -> dict:
+def reset_memory(_: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> dict:
     duckdb_dir = settings.storage_dir / "duckdb"
     uploads_dir = settings.storage_dir / "uploads"
 
@@ -80,6 +155,7 @@ def upload_dataset(
     file: UploadFile = File(...),
     description: str = Form(""),
     chat_session_id: str = Form(""),
+    _: str = Depends(require_authenticated),
     db: Session = Depends(get_db),
 ) -> dict:
     if not file.filename or Path(file.filename).suffix.lower() not in {".csv", ".xlsx"}:
@@ -114,7 +190,7 @@ def upload_dataset(
 
 
 @app.get("/datasets")
-def list_datasets(chat_session_id: str | None = None, db: Session = Depends(get_db)) -> list[dict]:
+def list_datasets(chat_session_id: str | None = None, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> list[dict]:
     query = db.query(Dataset)
     if chat_session_id:
         query = (
@@ -126,7 +202,7 @@ def list_datasets(chat_session_id: str | None = None, db: Session = Depends(get_
 
 
 @app.get("/datasets/{dataset_id}")
-def get_dataset(dataset_id: str, db: Session = Depends(get_db)) -> dict:
+def get_dataset(dataset_id: str, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> dict:
     dataset = db.get(Dataset, dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset no encontrado.")
@@ -134,7 +210,7 @@ def get_dataset(dataset_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/datasets/{dataset_id}/catalog")
-def get_catalog(dataset_id: str, db: Session = Depends(get_db)) -> list[dict]:
+def get_catalog(dataset_id: str, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> list[dict]:
     rows = (
         db.query(SemanticCatalog)
         .filter(SemanticCatalog.dataset_id == dataset_id)
@@ -229,14 +305,24 @@ def session_dataset_ids(db: Session, chat_session_id: str) -> list[str]:
     ]
 
 
+def delete_dataset_storage(dataset_id: str) -> None:
+    for suffix in (".csv", ".xlsx"):
+        upload_path = settings.storage_dir / "uploads" / f"{dataset_id}{suffix}"
+        if upload_path.exists():
+            upload_path.unlink()
+    duckdb_path = settings.storage_dir / "duckdb" / f"{dataset_id}.duckdb"
+    if duckdb_path.exists():
+        duckdb_path.unlink()
+
+
 @app.get("/chat/sessions")
-def list_chat_sessions(db: Session = Depends(get_db)) -> list[dict]:
+def list_chat_sessions(_: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> list[dict]:
     sessions = db.query(ChatSession).order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc()).all()
     return [session_payload(session, db) for session in sessions]
 
 
 @app.post("/chat/sessions")
-def create_chat_session(request: ChatSessionCreateRequest, db: Session = Depends(get_db)) -> dict:
+def create_chat_session(request: ChatSessionCreateRequest, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> dict:
     session = ChatSession(title=(request.title or "Nuevo chat").strip() or "Nuevo chat")
     db.add(session)
     db.commit()
@@ -245,11 +331,51 @@ def create_chat_session(request: ChatSessionCreateRequest, db: Session = Depends
 
 
 @app.get("/chat/sessions/{chat_session_id}")
-def get_chat_session(chat_session_id: str, db: Session = Depends(get_db)) -> dict:
+def get_chat_session(chat_session_id: str, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> dict:
     session = db.get(ChatSession, chat_session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Chat no encontrado.")
     return session_payload(session, db)
+
+
+@app.delete("/chat/sessions/{chat_session_id}")
+def delete_chat_session(chat_session_id: str, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> dict:
+    session = db.get(ChatSession, chat_session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat no encontrado.")
+
+    dataset_ids = session_dataset_ids(db, chat_session_id)
+
+    db.query(ChatJob).filter(ChatJob.chat_session_id == chat_session_id).delete()
+    db.query(ChatMessage).filter(ChatMessage.chat_session_id == chat_session_id).delete()
+    db.query(ChatSessionDataset).filter(ChatSessionDataset.chat_session_id == chat_session_id).delete()
+    db.delete(session)
+    db.commit()
+
+    removed_dataset_ids: list[str] = []
+    for dataset_id in dataset_ids:
+        still_linked = (
+            db.query(ChatSessionDataset)
+            .filter(ChatSessionDataset.dataset_id == dataset_id)
+            .first()
+        )
+        if still_linked:
+            continue
+        db.query(SemanticCatalog).filter(SemanticCatalog.dataset_id == dataset_id).delete()
+        db.query(DatasetEmbedding).filter(DatasetEmbedding.dataset_id == dataset_id).delete()
+        db.query(ChatJob).filter(ChatJob.dataset_id == dataset_id).delete()
+        dataset = db.get(Dataset, dataset_id)
+        if dataset:
+            db.delete(dataset)
+        db.commit()
+        delete_dataset_storage(dataset_id)
+        removed_dataset_ids.append(dataset_id)
+
+    return {
+        "status": "ok",
+        "deleted_chat_session_id": chat_session_id,
+        "deleted_dataset_ids": removed_dataset_ids,
+    }
 
 
 def process_chat_job(job_id: str) -> None:
@@ -289,6 +415,7 @@ def process_chat_job(job_id: str) -> None:
 def create_chat_job(
     request: ChatJobRequest,
     background_tasks: BackgroundTasks,
+    _: str = Depends(require_authenticated),
     db: Session = Depends(get_db),
 ) -> dict:
     chat_session = db.get(ChatSession, request.chat_session_id)
@@ -326,7 +453,7 @@ def create_chat_job(
 
 
 @app.get("/chat/jobs/{job_id}")
-def get_chat_job(job_id: str, db: Session = Depends(get_db)) -> dict:
+def get_chat_job(job_id: str, _: str = Depends(require_authenticated), db: Session = Depends(get_db)) -> dict:
     job = db.get(ChatJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Trabajo de chat no encontrado.")

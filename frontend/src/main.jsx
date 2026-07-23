@@ -5,11 +5,14 @@ import {
   Bot,
   FileText,
   Gauge,
+  LockKeyhole,
+  LogOut,
   MessageSquarePlus,
   Paperclip,
   RotateCcw,
   Send,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import './styles.css';
 
@@ -31,6 +34,7 @@ function uploadDatasetRequest(file, description, onProgress, chatSessionId) {
     const request = new XMLHttpRequest();
     request.open('POST', `${API_BASE_URL}/datasets`);
     request.responseType = 'json';
+    request.withCredentials = true;
 
     request.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
@@ -52,10 +56,18 @@ function uploadDatasetRequest(file, description, onProgress, chatSessionId) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, options);
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: 'include',
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+    },
+  });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Error ${response.status}`);
+    const error = new Error(text || `Error ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -122,7 +134,7 @@ function chatMetaLabel(session) {
   return `${datasets.length} archivo${datasets.length > 1 ? 's' : ''} · ${readyCount} listo${readyCount > 1 ? 's' : ''}`;
 }
 
-function Sidebar({ sessions, activeSessionId, onSelect, onCreate, onReset, resetting }) {
+function Sidebar({ sessions, activeSessionId, onSelect, onCreate, onDelete, onReset, onLogout, resetting }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -148,19 +160,29 @@ function Sidebar({ sessions, activeSessionId, onSelect, onCreate, onReset, reset
         ) : (
           <div className="datasetList">
             {sessions.map((session) => (
-              <button
-                key={session.id}
-                className={`datasetItem ${session.id === activeSessionId ? 'active' : ''}`}
-                onClick={() => onSelect(session.id)}
-                type="button"
-              >
-                <div className="datasetItemIcon"><FileText size={15} /></div>
-                <div className="datasetItemBody">
-                  <strong>{session.title || 'Nuevo chat'}</strong>
-                  <span>{chatMetaLabel(session)}</span>
-                  {session.last_message_preview ? <span>{session.last_message_preview}</span> : null}
-                </div>
-              </button>
+              <div key={session.id} className="datasetItemRow">
+                <button
+                  className={`datasetItem datasetSelectBtn ${session.id === activeSessionId ? 'active' : ''}`}
+                  onClick={() => onSelect(session.id)}
+                  type="button"
+                >
+                  <div className="datasetItemIcon"><FileText size={15} /></div>
+                  <div className="datasetItemBody">
+                    <strong>{session.title || 'Nuevo chat'}</strong>
+                    <span>{chatMetaLabel(session)}</span>
+                    {session.last_message_preview ? <span>{session.last_message_preview}</span> : null}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className="datasetDeleteBtn"
+                  onClick={() => onDelete(session)}
+                  aria-label={`Eliminar chat ${session.title || 'Nuevo chat'}`}
+                  title="Eliminar chat"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -182,6 +204,15 @@ function Sidebar({ sessions, activeSessionId, onSelect, onCreate, onReset, reset
             title="Reiniciar memoria"
           >
             <RotateCcw size={15} />
+          </button>
+          <button
+            type="button"
+            className="resetMemoryBtn"
+            onClick={onLogout}
+            aria-label="Cerrar sesión"
+            title="Cerrar sesión"
+          >
+            <LogOut size={15} />
           </button>
         </div>
       </div>
@@ -648,7 +679,52 @@ function RightPanel({ datasets, activeDatasetId, onSelect }) {
   );
 }
 
+function LoginScreen({ onSubmit, loading, error }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  function submit(event) {
+    event.preventDefault();
+    if (!username.trim() || !password) return;
+    onSubmit({ username: username.trim(), password });
+  }
+
+  return (
+    <div className="loginShell">
+      <form className="loginCard" onSubmit={submit}>
+        <div className="loginBrand">
+          <div className="brandIcon"><BarChart3 size={18} /></div>
+          <div>
+            <div className="brandTitle">Metric IA</div>
+            <div className="brandSubtitle loginSubtitle">Acceso restringido</div>
+          </div>
+        </div>
+        <div className="loginHeader">
+          <LockKeyhole size={18} />
+          <strong>Ingresa para usar el chat</strong>
+        </div>
+        {error ? <div className="errorBox loginError">{error}</div> : null}
+        <label className="loginField">
+          <span>Usuario</span>
+          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+        </label>
+        <label className="loginField">
+          <span>Contraseña</span>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
+        </label>
+        <button className="loginBtn" type="submit" disabled={loading || !username.trim() || !password}>
+          {loading ? 'Validando...' : 'Entrar'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [activeDatasetId, setActiveDatasetId] = useState(null);
@@ -672,7 +748,23 @@ function App() {
     [datasets],
   );
 
+
   useEffect(() => {
+    async function loadAuth() {
+      try {
+        const result = await api('/auth/me');
+        setAuthenticated(Boolean(result.authenticated));
+      } catch (err) {
+        setAuthenticated(false);
+      } finally {
+        setAuthReady(true);
+      }
+    }
+    loadAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return undefined;
     let timer;
     async function loadSessions() {
       try {
@@ -683,13 +775,20 @@ function App() {
           return items[0]?.id || null;
         });
       } catch (err) {
+        if (err.status === 401) {
+          setAuthenticated(false);
+          setSessions([]);
+          setActiveSessionId(null);
+          setMessages([]);
+          return;
+        }
         setError(err.message);
       }
     }
     loadSessions();
     timer = setInterval(loadSessions, 2500);
     return () => clearInterval(timer);
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => {
     if (!activeSession) {
@@ -724,6 +823,12 @@ function App() {
           setPendingDetail('');
         }
       } catch (err) {
+        if (err.status === 401) {
+          setAuthenticated(false);
+          setPendingJobId(null);
+          setPendingDetail('');
+          return;
+        }
         setError(err.message);
       }
     }, 1400);
@@ -749,6 +854,68 @@ function App() {
     setSessions((items) => [session, ...items]);
     setActiveSessionId(session.id);
     return session.id;
+  }
+
+  async function deleteSession(session) {
+    if (!session?.id) return;
+    if (pendingJobId && activeSession?.id === session.id) {
+      setError('Espera a que termine la respuesta actual antes de eliminar este chat.');
+      return;
+    }
+    const confirmed = window.confirm(`Se eliminará el chat "${session.title || 'Nuevo chat'}" y sus archivos asociados.`);
+    if (!confirmed) return;
+    setError('');
+    try {
+      await api(`/chat/sessions/${session.id}`, { method: 'DELETE' });
+      const nextSessions = sessions.filter((item) => item.id !== session.id);
+      setSessions(nextSessions);
+      if (activeSessionId === session.id) {
+        setActiveSessionId(nextSessions[0]?.id || null);
+      }
+      if (!nextSessions.length) {
+        setMessages([]);
+        setActiveDatasetId(null);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function login(credentials) {
+    setAuthLoading(true);
+    setAuthError('');
+    try {
+      await api('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials),
+      });
+      setAuthenticated(true);
+      setAuthReady(true);
+      setError('');
+      await refreshSessions();
+    } catch (err) {
+      setAuthError(err.status === 401 ? 'Usuario o contraseña inválidos.' : err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await api('/auth/logout', { method: 'POST' });
+    } catch {
+      // no-op
+    }
+    setAuthenticated(false);
+    setSessions([]);
+    setActiveSessionId(null);
+    setActiveDatasetId(null);
+    setMessages([]);
+    setPendingJobId(null);
+    setPendingDetail('');
+    setUploadQueue([]);
+    setError('');
   }
 
   async function ensureActiveSession(title = 'Nuevo chat') {
@@ -851,6 +1018,14 @@ function App() {
     }
   }
 
+  if (!authReady) {
+    return <div className="loginShell"><div className="loginCard loginLoading">Validando acceso...</div></div>;
+  }
+
+  if (!authenticated) {
+    return <LoginScreen onSubmit={login} loading={authLoading} error={authError} />;
+  }
+
   return (
     <div className="appShell">
       <Sidebar
@@ -858,7 +1033,9 @@ function App() {
         activeSessionId={activeSession?.id}
         onSelect={setActiveSessionId}
         onCreate={() => createSession('Nuevo chat')}
+        onDelete={deleteSession}
         onReset={resetMemory}
+        onLogout={logout}
         resetting={resetting}
       />
       <main className="workspace">
